@@ -25,13 +25,18 @@
 <script>
 const KEY='fr_products_v1';
 let category='Tümü';
+let feedProducts=[];
 const root=document.getElementById('products');
 const money=n=>Number(n||0).toLocaleString('tr-TR',{style:'currency',currency:'TRY',maximumFractionDigits:0});
 const esc=v=>String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 function readProducts(){try{return JSON.parse(localStorage.getItem(KEY)||'[]')}catch{return []}}
+async function loadFeed(){try{const r=await fetch('./data/products.json?ts='+Date.now(),{cache:'no-store'});if(!r.ok)throw new Error('feed unavailable');const data=await r.json();feedProducts=Array.isArray(data.products)?data.products.filter(x=>x.published&&x.priceVerified):[]}catch(e){console.warn('Otomatik ürün akışı henüz hazır değil:',e.message)}render()}
 function render(){
  const term=document.getElementById('q').value.toLocaleLowerCase('tr');
- const published=readProducts().filter(x=>x.published);
+ const local=readProducts().filter(x=>x.published);
+ const merged=new Map();
+ [...feedProducts,...local].forEach(x=>merged.set(x.id||`${x.store}|${x.name}`,x));
+ const published=[...merged.values()];
  const cats=['Tümü',...new Set(published.map(x=>x.category).filter(Boolean))];
  const filters=document.getElementById('filters');
  if(!cats.includes(category))category='Tümü';
@@ -52,4 +57,5 @@ document.getElementById('q').addEventListener('input',render);
 document.getElementById('filters').addEventListener('click',e=>{if(!e.target.matches('button'))return;category=e.target.dataset.cat;render()});
 window.addEventListener('storage',e=>{if(e.key===KEY)render()});
 render();
+loadFeed();
 </script></body></html>

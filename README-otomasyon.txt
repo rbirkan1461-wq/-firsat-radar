@@ -1,33 +1,20 @@
-FIRSAT RADAR - OTOMATİK KATALOG TOPLAYICI (MVP)
+FIRSAT RADAR - OTOMATİK KATALOG TARAMA (İLK OTOMASYON SÜRÜMÜ)
 
-Dosyalar:
-- scrape_catalogs.py: BİM, A101 ve ŞOK kaynaklarını kontrol eder.
-- incoming-products.json: bulunan kayıtları üretir.
-- requirements.txt: gerekli Python paketleri.
+Kurulum:
+1) Depodaki mevcut index.html ve scrape_catalogs.py dosyalarını bu pakettekilerle değiştir.
+2) data/ klasörünü ve içindeki products.json + scrape-report.json dosyalarını yükle.
+3) .github/workflows/catalog-scan.yml dosyasını aynı yol ile GitHub deposuna ekle.
+4) GitHub deposunda Settings > Actions > General bölümünde Actions izinleri açık olmalı.
+5) Actions sekmesinden "Firsat Radar - katalog tarama" iş akışını Run workflow ile ilk kez elle çalıştır.
+6) Başarılı taramadan sonra bot data/products.json dosyasını commit eder; Cloudflare Pages GitHub push ile siteyi tekrar yayınlar.
 
-Yerelde çalıştırma:
-  python -m pip install -r requirements.txt
-  python scrape_catalogs.py
+Zamanlama: Her gün 06:00 Türkiye saati (03:00 UTC).
 
-Çıktı:
-  incoming-products.json
+Bu sürüm BİM/A101/ŞOK resmi sayfalarını taramayı dener. Yalnızca ürün adı ve fiyatı açıkça çıkarılabilen ürünleri ürün akışına ekler. Kaynak ve kontrol zamanı saklanır. Site, data/products.json içindeki published=true ve priceVerified=true ürünleri gösterir.
 
 ÖNEMLİ SINIRLAR:
-- Bu bir ilk sürüm toplayıcıdır; kaynak sitelerin HTML yapısı değişirse uyarlama gerekir.
-- BİM ve A101 ürün/fiyatları kaynak sayfadan okunmaya çalışılır.
-- ŞOK kurumsal sayfası katalog PDF bağlantılarını verebilir; PDF içeriği her zaman makinece okunabilir değildir. Ürün adı/fiyat çıkarılamayan kayıtlar tahmin edilmez.
-- Kampanya başlangıç/bitiş tarihleri kaynakta açıkça yakalanmadıkça boş bırakılır.
-- Ürünler yayınlanmaz; onay bekleyen taslaklardır.
-- Bu script bu bilgisayarda kendi kendine çalışmaz. Sürekli otomasyon için sunucuda/VPS'de zamanlayıcı (cron/GitHub Actions) ve merkezi veritabanı/API gerekir.
-
-Günlük cron örneği (sunucuda):
-  15 7 * * * cd /opt/firsat-radar && /usr/bin/python3 scrape_catalogs.py
-
-Yönetim paneli şu an localStorage kullanır. JSON dosyasını içe aktarmak için paneldeki
-“Katalogdan ürün aktar” alanı kullanılır. Canlı, çok cihazlı otomatik senkron için
-sonraki aşamada API + veritabanı entegrasyonu gereklidir.
-
-Kaynak sayfalar:
-BİM: https://www.bim.com.tr/
-A101: https://www.a101.com.tr/liste/aldin-aldin
-ŞOK: https://kurumsal.sokmarket.com.tr/tr/firsatlar
+- Mağazaların sayfa yapısı ve bot korumaları değişebilir; her çalışmada Actions sonuçlarını kontrol et.
+- ŞOK katalog PDF'leri ve dinamik sayfalar bu ilk sürümde tam ürün OCR/parsing kapsamına alınmadı.
+- İnternet mağazası fiyatı henüz otomatik eşleştirilmiyor. onlinePrice boş kalır; site "Fiyat araştırılıyor" gösterir. Aynı model/ürün kodu doğrulanmadan fiyat kıyaslaması yapılmaz.
+- Bu ilk sürüm, bulunan market ürünlerini otomatik olarak sitede gösterir; yanlış eşleşme/bozuk kaynak ihtimaline karşı kaynak bağlantısı ve kontrol zamanı tutulur.
+- Herhangi bir mağazanın kullanım koşullarını ve robots.txt kurallarını ihlal edecek şekilde istek sıklığını artırma.

@@ -1,132 +1,185 @@
 #!/usr/bin/env python3
-# Fırsat Radar - katalog toplayıcı (MVP)
-# Kaynak sayfaları günlük kontrol eder; ürünleri taslak JSON olarak üretir.
-import json, re, hashlib, sys, logging
+"""Firsat Radar: scheduled collector for public weekly-deal pages.
+Only products with a clear title and parsed TRY price are emitted. This is a
+best-effort collector: source markup can change and every item keeps provenance.
+"""
+from __future__ import annotations
+import json, re, hashlib, logging, os
 from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import urljoin
 import requests
 from bs4 import BeautifulSoup
 
-OUT = Path(__file__).with_name('incoming-products.json')
-HEADERS = {'User-Agent': 'Mozilla/5.0 (compatible; FirsatRadarBot/1.0; +catalog-monitor)'}
+ROOT = Path(__file__).resolve().parent
+DATA = ROOT / "data"
+DATA.mkdir(exist_ok=True)
+PRODUCTS_FILE = DATA / "products.json"
+REPORT_FILE = DATA / "scrape-report.json"
+HEADERS = {"User-Agent": "Mozilla/5.0 (compatible; FirsatRadar/1.0; +https://firsat-radar.pages.dev)"}
 SOURCES = {
- 'BİM': 'https://www.bim.com.tr/',
- 'A101': 'https://www.a101.com.tr/liste/aldin-aldin',
- 'ŞOK': 'https://kurumsal.sokmarket.com.tr/tr/firsatlar',
+    "BİM": "https://www.bim.com.tr/",
+    "A101": "https://www.a101.com.tr/liste/aldin-aldin",
+    "ŞOK": "https://kurumsal.sokmarket.com.tr/tr/firsatlar",
 }
-logging.basicConfig(level=logging.INFO, format='%(levelname)s: %(message)s')
+logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
 
-def get(url):
-    r = requests.get(url, headers=HEADERS, timeout=25)
+
+def price_num(value):
+    if value is None: return None
+    s = str(value).replace("\xa0", " ").strip()
+    # Structured data may use 1234.5; Turkish pages usually use 1.234,50 TL.
+    if re.fullmatch(r"\d+(?:\.\d+)?", s):
+        try: return round(float(s), 2)
+        except ValueError: return None
+    m = re.search(r"(?<!\d)(\d{1,3}(?:\.\d{3})*|\d+),(\d{2})(?!\d)", s)
+    if not m: return None
+    try: return round(float(m.group(1).replace(".", "") + "." + m.group(2)), 2)
+    except ValueError: return None
+
+
+def category(name):
+    n = name.casefold()
+    if any(x in n for x in ["tv", "televizyon", "telefon", "kulaklık", "qled", "led", "tablet", "bilgisayar"]): return "Elektronik"
+    if any(x in n for x in ["ütü", "süpürge", "mikser", "kahve makinesi", "airfryer", "fritöz"]): return "Küçük ev aletleri"
+    if any(x in n for x in ["çamaşır", "bulaşık", "buzdolabı", "derin dondurucu"]): return "Beyaz eşya"
+    if any(x in n for x in ["yorgan", "yastık", "halı", "tencere", "sahan", "kavanoz", "borcam", "nevresim"]): return "Ev & yaşam"
+    return "Diğer"
+
+
+def stable_id(store, name, url):
+    raw = f"{store}|{name.casefold()}|{url}".encode()
+    return hashlib.sha1(raw).hexdigest()[:16]
+
+
+def make_item(store, name, price, product_url, image_url, source_url, method):
+    name = re.sub(r"\s+", " ", str(name or "")).strip(" -|\n\t")
+    price = price_num(price)
+    if len(name) < 4 or len(name) > 180 or price is None or price <= 0: return None
+    now = datetime.now(timezone.utc).isoformat()
+    product_url = urljoin(source_url, product_url or source_url)
+    image_url = urljoin(source_url, image_url) if image_url else ""
+    # The market listing itself is verified as the source of this market price.
+    # Online comparison is deliberately left blank until an exact model match exists.
+    return {
+        "id": stable_id(store, name, product_url), "name": name, "store": store,
+        "category": category(name), "marketPrice": price, "onlinePrice": "",
+        "url": product_url, "image": image_url, "start": "", "end": "",
+        "notes": f"Otomatik katalog taraması ({method}). İnternet fiyatı henüz doğrulanmadı.",
+        "published": True, "sourceUrl": source_url, "checkedAt": now,
+        "priceVerified": True, "onlinePriceVerified": False, "needsReview": False,
+    }
+
+
+def fetch(url):
+    r = requests.get(url, headers=HEADERS, timeout=30)
     r.raise_for_status()
     r.encoding = r.apparent_encoding or r.encoding
     return r.text, r.url
 
-def price_num(s):
-    s = s.replace('\xa0',' ').strip()
-    m = re.search(r'(?:₺\s*)?([\d.]+,[0-9]{2})\s*(?:₺|TL)?', s)
-    if not m: return None
-    return float(m.group(1).replace('.','').replace(',','.'))
 
-def slug_id(store, name, price):
-    raw = f'{store}|{name.casefold()}|{price}'.encode('utf-8')
-    return hashlib.sha1(raw).hexdigest()[:16]
+def walk_jsonld(obj):
+    if isinstance(obj, list):
+        for x in obj: yield from walk_jsonld(x)
+    elif isinstance(obj, dict):
+        yield obj
+        graph = obj.get("@graph")
+        if graph: yield from walk_jsonld(graph)
 
-def category(name):
-    n=name.casefold()
-    if any(x in n for x in ['tv','televizyon','telefon','kulaklık','qled','led','tablet','bilgisayar']): return 'Elektronik'
-    if any(x in n for x in ['çamaşır','bulaşık','buzdolabı','süpürge','ütü','mikser','kahve makinesi']): return 'Beyaz eşya' if any(x in n for x in ['çamaşır','bulaşık','buzdolabı']) else 'Küçük ev aletleri'
-    if any(x in n for x in ['yorgan','yastık','halı','tencere','sahan','kavanoz','borcam','nevresim']): return 'Ev & yaşam'
-    return 'Diğer'
 
-def make_item(store, name, price, url, image='', start='', end='', source_note=''):
-    name=re.sub(r'\s+',' ',name).strip(' -|')
-    if not name or price is None or len(name)<3: return None
-    return {'id':slug_id(store,name,price),'name':name,'store':store,'category':category(name),
-      'marketPrice':str(price),'onlinePrice':'','url':url,'image':image,'start':start,'end':end,
-      'notes':f'Otomatik kaynak: {source_note or url} · Kontrol: {datetime.now().strftime("%d.%m.%Y %H:%M")}',
-      'published':False,'sourceUrl':url,'checkedAt':datetime.now(timezone.utc).isoformat()}
+def structured_products(store, html, base):
+    soup = BeautifulSoup(html, "html.parser")
+    found = []
+    for tag in soup.find_all("script", type="application/ld+json"):
+        try: data = json.loads(tag.string or tag.get_text())
+        except Exception: continue
+        for obj in walk_jsonld(data):
+            typ = obj.get("@type", [])
+            if isinstance(typ, str): typ = [typ]
+            if not any("Product" in str(t) for t in typ): continue
+            name = obj.get("name")
+            offers = obj.get("offers", {})
+            if isinstance(offers, list): offers = offers[0] if offers else {}
+            if isinstance(offers, dict) and "price" not in offers and "offers" in offers:
+                nested = offers.get("offers")
+                offers = nested[0] if isinstance(nested, list) and nested else nested or {}
+            price = offers.get("price") if isinstance(offers, dict) else None
+            currency = offers.get("priceCurrency", "TRY") if isinstance(offers, dict) else "TRY"
+            if currency not in ("TRY", "TL"): continue
+            image = obj.get("image", "")
+            if isinstance(image, list): image = image[0] if image else ""
+            url = obj.get("url") or offers.get("url", "") if isinstance(offers, dict) else obj.get("url", "")
+            item = make_item(store, name, price, url, image, base, "JSON-LD ürün verisi")
+            if item: found.append(item)
+    return found
 
-def scrape_bim():
-    html, base=get(SOURCES['BİM']); soup=BeautifulSoup(html,'html.parser'); out=[]
-    # BİM sayfasındaki ürün adları h2 ve fiyat bağlantılarında sunuluyor.
-    for h in soup.find_all(['h2','h3']):
-        name=h.get_text(' ',strip=True)
-        if not name or len(name)>140: continue
-        parent=h.parent
-        area=' '.join(parent.get_text(' ',strip=True).split()) if parent else ''
-        if len(area)<len(name): area=name
-        p=price_num(area)
-        if p is None:
-            # fiyat çoğunlukla ürün kartının birkaç sonraki kardeşinde
-            node=h
-            for _ in range(4):
-                node=node.parent if node and node.parent else node
-                if node:
-                    p=price_num(node.get_text(' ',strip=True))
-                    if p is not None: break
-        if p is None: continue
-        img=(parent.find('img') if parent else None) or h.find_next('img')
-        image=urljoin(base, img.get('src') or img.get('data-src') or '') if img else ''
-        out.append(make_item('BİM',name,p,base,image,source_note='BİM resmi web sitesi'))
-    return out
 
-def scrape_a101():
-    html, base=get(SOURCES['A101']); soup=BeautifulSoup(html,'html.parser'); out=[]
-    # Ürün kartları farklı sürümlerde değişebildiği için başlıkların en yakın kart kapsayıcısı taranır.
-    for h in soup.find_all(['h2','h3']):
-        name=h.get_text(' ',strip=True)
-        if not name or len(name)>180: continue
-        node=h
-        best=None
-        for _ in range(5):
-            if not node.parent: break
-            node=node.parent
-            txt=node.get_text(' ',strip=True)
-            p=price_num(txt)
-            if p is not None and len(txt)<900:
-                best=(node,p); break
-        if not best: continue
-        card,p=best
-        a=card.find('a',href=True); img=card.find('img')
-        url=urljoin(base,a['href']) if a else base
-        image=urljoin(base,(img.get('src') or img.get('data-src') or '')) if img else ''
-        out.append(make_item('A101',name,p,url,image,source_note='A101 Aldın Aldın resmi liste'))
-    return out
+def fallback_cards(store, html, base):
+    """Conservative fallback: only card-like elements with title and price."""
+    soup = BeautifulSoup(html, "html.parser")
+    found = []
+    selectors = ["article", "[class*=product]", "[class*=Product]", "[data-product]"]
+    seen_nodes = set()
+    for selector in selectors:
+        for card in soup.select(selector)[:500]:
+            if id(card) in seen_nodes: continue
+            seen_nodes.add(id(card))
+            text = " ".join(card.get_text(" ", strip=True).split())
+            price = price_num(text)
+            if price is None: continue
+            title_node = card.select_one("h2,h3,[class*=title],[class*=name]")
+            name = title_node.get_text(" ", strip=True) if title_node else ""
+            if not name: continue
+            link = card.find("a", href=True)
+            img = card.find("img")
+            item = make_item(store, name, price, link.get("href") if link else base,
+                             (img.get("src") or img.get("data-src") or "") if img else "", base,
+                             "ürün kartı HTML taraması")
+            if item: found.append(item)
+    return found
 
-def scrape_sok():
-    # ŞOK kurumsal sayfası katalog PDF bağlantılarını yayınlar. PDF metni ürün/fiyat vermiyorsa
-    # tahmin yapılmaz; katalog bağlantısı inceleme kuyruğuna metadata olarak yazılır.
-    html, base=get(SOURCES['ŞOK']); soup=BeautifulSoup(html,'html.parser'); out=[]
-    for a in soup.find_all('a',href=True):
-        href=urljoin(base,a['href']); label=' '.join(a.get_text(' ',strip=True).split())
-        if '.pdf' in href.lower() or 'indir' in label.casefold():
-            name=label or 'ŞOK haftalık aktüel katalog'
-            item={'id':slug_id('ŞOK',name,0),'name':name,'store':'ŞOK','category':'Diğer',
-              'marketPrice':'','onlinePrice':'','url':href,'image':'','start':'','end':'',
-              'notes':'Katalog bağlantısı otomatik bulundu; ürün ve fiyatlar doğrulanmadan yayınlanmaz.',
-              'published':False,'sourceUrl':href,'checkedAt':datetime.now(timezone.utc).isoformat(),'needsReview':True}
-            out.append(item)
-    return out
+
+def scrape_store(store, url):
+    html, final_url = fetch(url)
+    items = structured_products(store, html, final_url)
+    method = "JSON-LD"
+    if not items:
+        items = fallback_cards(store, html, final_url)
+        method = "HTML kart taraması"
+    # Deduplicate on canonical item id.
+    dedup = {x["id"]: x for x in items}
+    logging.info("%s: %d ürün (%s)", store, len(dedup), method)
+    return list(dedup.values()), {"ok": True, "count": len(dedup), "method": method, "url": final_url}
+
 
 def main():
-    all_items=[]; status={}
-    for store, fn in [('BİM',scrape_bim),('A101',scrape_a101),('ŞOK',scrape_sok)]:
+    previous = {x.get("id"): x for x in json.loads(PRODUCTS_FILE.read_text("utf-8")).get("products", [])} if PRODUCTS_FILE.exists() else {}
+    current, status = {}, {}
+    for store, url in SOURCES.items():
         try:
-            items=fn(); status[store]={'ok':True,'count':len(items)}; all_items.extend(items)
-            logging.info('%s: %s kayıt bulundu',store,len(items))
-        except Exception as e:
-            status[store]={'ok':False,'error':str(e)}; logging.exception('%s kaynağı okunamadı',store)
-    # Fiyatlı ürünlerde tekrarları ayıkla; fiyatı olmayan ŞOK katalog kayıtlarını ayrıca koru.
-    seen=set(); unique=[]
-    for x in all_items:
-        key=(x['store'],x['name'].casefold(),x.get('marketPrice',''))
-        if key not in seen: seen.add(key); unique.append(x)
-    payload={'generatedAt':datetime.now(timezone.utc).isoformat(),'status':status,'products':unique}
-    OUT.write_text(json.dumps(payload,ensure_ascii=False,indent=2),encoding='utf-8')
-    print(json.dumps({'output':str(OUT),'status':status,'total':len(unique)},ensure_ascii=False,indent=2))
-    # exit non-zero only if every source failed
-    if not any(x.get('ok') for x in status.values()): sys.exit(2)
+            items, info = scrape_store(store, url)
+            for item in items:
+                # Keep first-seen date; update the latest observed price and timestamp.
+                old = previous.get(item["id"], {})
+                item["firstSeenAt"] = old.get("firstSeenAt", item["checkedAt"])
+                current[item["id"]] = item
+            status[store] = info
+        except Exception as exc:
+            logging.exception("%s taranamadı", store)
+            status[store] = {"ok": False, "error": str(exc), "url": url}
+    # Keep previously discovered products if a source temporarily fails; mark stale.
+    for pid, old in previous.items():
+        if pid not in current:
+            store = old.get("store")
+            if not status.get(store, {}).get("ok"):
+                old["stale"] = True
+                current[pid] = old
+    payload = {"generatedAt": datetime.now(timezone.utc).isoformat(),
+               "status": status, "products": sorted(current.values(), key=lambda x: x.get("checkedAt", ""), reverse=True)}
+    PRODUCTS_FILE.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    REPORT_FILE.write_text(json.dumps({"generatedAt": payload["generatedAt"], "status": status,
+                                       "totalProducts": len(current)}, ensure_ascii=False, indent=2), encoding="utf-8")
+    print(json.dumps({"status": status, "totalProducts": len(current)}, ensure_ascii=False, indent=2))
+    if not any(v.get("ok") for v in status.values()): raise SystemExit("All sources failed")
 
-if __name__=='__main__': main()
+if __name__ == "__main__": main()

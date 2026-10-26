@@ -1,0 +1,21 @@
+{
+  "generatedAt": "2026-10-26T20:00:00+03:00",
+  "status": "review_required",
+  "products": [
+    {
+      "id": "bim-philips-azur-utu-2026-11-01",
+      "name": "Philips Azur Buharlı Ütü (model kodu katalogda belirtilmemiş)",
+      "store": "BİM",
+      "category": "Küçük ev aletleri",
+      "marketPrice": "3990",
+      "onlinePrice": "",
+      "url": "https://aktuelkatalogu.com/bim-30-ekim-2026-aktuel-urunler-katalogu/",
+      "image": "",
+      "start": "2026-11-01",
+      "end": "2026-11-08",
+      "notes": "TASLAK — BİM 1–8 Kasım 2026 kataloğunda Philips Azur Ütü 3.990 TL olarak listelenmiş. Model kodu belirtilmediği için DST7510/80 veya başka bir modelle eşleştiği doğrulanmadı. Bu nedenle internet fiyatı karşılaştırmasına dahil edilmedi ve otomatik yayına alınmamalı. Kaynak: https://aktuelkatalogu.com/bim-30-ekim-2026-aktuel-urunler-katalogu/ | Kontrol: 26.10.2026",
+      "published": false,
+      "createdAt": "2026-10-26T20:00:00+03:00"
+    }
+  ]
+}
